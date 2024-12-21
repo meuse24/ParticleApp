@@ -1,15 +1,24 @@
+// File: MainActivity.kt
 package info.meuse24.myapplication
 
-import android.annotation.SuppressLint
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
@@ -17,175 +26,60 @@ import androidx.compose.ui.input.pointer.changedToUp
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
-import kotlin.random.Random
 
-// Datenklasse für Partikel.
-// Jedes Partikel hat:
-// - position: Die aktuelle Position im Raum (in Pixelkoordinaten)
-// - velocity: Die Geschwindigkeit (x, y), beeinflusst wie das Partikel pro Frame verschoben wird
-// - startY: Der Y-Wert, an dem das Partikel entstanden ist, wird für die Alpha-Berechnung genutzt.
-// - alpha: Transparenzwert zwischen 0 (unsichtbar) und 1 (voll sichtbar).
-// - color: Die Farbe dieses Partikels.
-// - fadeFactor: Bestimmt, wie schnell das Partikel ausblendet (höherer Wert = schnelleres Verblassen).
-data class ParticleData(
-    var position: Offset,
-    var velocity: Offset,
-    var startY: Float,
-    var alpha: Float = 1f,
-    var color: Color,
-    var fadeFactor: Float
+@Stable
+data class ParticleSettings(
+    val baseSpeed: Float = 150f,
+    val fadeFactor: Float = 1.0f,
+    val particleSize: Float = 10f,
+    val emissionRate: Int = 3,
+    val angleDeviation: Float = 15f
 )
 
-// ParticlePool ist ein Ressourcen-Manager für Partikel.
-// Er hält aktive und inaktive Partikel vor, um unnötige Objekt-Neuerstellungen zu vermeiden.
-// Dadurch kann die Performance gesteigert werden, da weniger Garbage Collection nötig ist.
-class ParticlePool(private val maxSize: Int = 1000) {
-    private val activeParticles = mutableListOf<ParticleData>()
-    private val inactiveParticles = mutableListOf<ParticleData>()
-
-    val particleCount: Int
-        get() = activeParticles.size
-
-    // Liste möglicher Farben für Partikel
-    private val particleColors = listOf(
-        Color.Green,
-        Color.Cyan,
-        Color.Magenta,
-        Color.Yellow,
-        Color.Blue,
-        Color.White
-    )
-
-    // spawn erzeugt oder reaktiviert ein Partikel mit zufälliger Farbe und Zufallswerten.
-    // position: Startposition des Partikels
-    // velocity: Geschwindigkeit des Partikels
-    fun spawn(position: Offset, velocity: Offset): ParticleData {
-        // Zufällige Farbe auswählen
-        val chosenColor = particleColors.random()
-        // Zufälliger Fade-Faktor zwischen 0.5 und 2.0
-        // Partikel mit höherem Wert verblassen schneller.
-        val fadeFactor = 0.5f + Random.nextFloat() * 1.5f
-
-        // Wenn bereits die maximale Anzahl an aktiven Partikeln erreicht ist
-        // und kein inaktives Partikel vorhanden ist, recyceln wir das erste aktive Partikel.
-        if (activeParticles.size >= maxSize && inactiveParticles.isEmpty()) {
-            val recycled = activeParticles.removeAt(0)
-            recycled.position = position
-            recycled.velocity = velocity
-            recycled.startY = position.y
-            recycled.alpha = 1f
-            recycled.color = chosenColor
-            recycled.fadeFactor = fadeFactor
-            activeParticles.add(recycled)
-            return recycled
-        }
-
-        // Falls es inaktive Partikel gibt, reaktiviere eines davon.
-        val particle = if (inactiveParticles.isNotEmpty()) {
-            val p = inactiveParticles.removeAt(0)
-            p.position = position
-            p.velocity = velocity
-            p.startY = position.y
-            p.alpha = 1f
-            p.color = chosenColor
-            p.fadeFactor = fadeFactor
-            p
-        } else {
-            // Neues Partikel erstellen, falls es keine inaktiven gibt.
-            ParticleData(
-                position = position,
-                velocity = velocity,
-                startY = position.y,
-                alpha = 1f,
-                color = chosenColor,
-                fadeFactor = fadeFactor
-            )
-        }
-
-        activeParticles.add(particle)
-        return particle
-    }
-
-    // Update aktualisiert alle aktiven Partikel pro Frame.
-    // deltaTime: Zeit seit dem letzten Frame in Sekunden
-    // screenHeight: Höhe des verfügbaren Bereichs in Pixeln
-    fun update(deltaTime: Float) {
-        val iterator = activeParticles.iterator()
-        while (iterator.hasNext()) {
-            val particle = iterator.next()
-
-            // Berechne, wie weit das Partikel aufgestiegen ist.
-            val traveled = particle.startY - particle.position.y
-            // Berechne Alpha-Wert unter Einbezug des fadeFactors.
-            val rawAlpha = 1f - (traveled / particle.startY) * particle.fadeFactor
-            particle.alpha = rawAlpha.coerceIn(0f, 1f)
-
-            // Wenn das Partikel aus dem sichtbaren Bereich oben raus ist (y < -20f), entfernen.
-            if (particle.position.y < -20f) {
-                iterator.remove()
-                inactiveParticles.add(particle)
-                continue
-            }
-
-            // Positionsupdate: Verschiebung gemäß velocity und vergangener Zeit.
-            particle.position = Offset(
-                x = particle.position.x + particle.velocity.x * deltaTime,
-                y = particle.position.y + particle.velocity.y * deltaTime
-            )
-        }
-    }
-
-    // Gibt die Liste der aktiven Partikel zurück, um sie im Canvas zu zeichnen.
-    fun getActiveParticles(): List<ParticleData> = activeParticles
-}
-
-// GameState kümmert sich um den Spielzustand:
-// - Position des "Spielers" (roter Kreis)
-// - Erzeugen von Partikeln (isEmitting = true, wenn Finger auf dem Bildschirm)
-// - Update des Partikelpools
-class GameState {
-    private val particlePool = ParticlePool()
-    var playerPosition = Offset(200f, 200f)
-    var isEmitting = false
+class GameState(private val particleSystem: ParticleSystem = ParticleSystem()) {
+    var playerPosition by mutableStateOf(Offset(200f, 200f))
+    var isEmitting by mutableStateOf(false)
     private var emissionCounter = 0
 
     val particleCount: Int
-        get() = particlePool.particleCount
+        get() = particleSystem.getParticleCount()
 
-    // Update führt die logische Aktualisierung pro Frame aus.
-    // deltaTime: Zeit seit letztem Frame
-    // screenHeight: tatsächliche Bildschirmhöhe in Pixel
+    fun updateParameters(settings: ParticleSettings, newParticleColors: List<Color>?) {
+        particleSystem.updateParameters(
+            newBaseSpeed = settings.baseSpeed,
+            newFadeFactor = settings.fadeFactor,
+            newParticleSize = settings.particleSize,
+            newEmissionRate = settings.emissionRate,
+            newAngleDeviation = settings.angleDeviation,
+            newParticleColors = newParticleColors
+        )
+    }
+
     fun update(deltaTime: Float) {
-        // Partikel aktualisieren
-        particlePool.update(deltaTime)
+        particleSystem.updateParticles(deltaTime)
 
-        // Wenn wir emitten (Finger auf dem Bildschirm), alle 5 Frames 3 neue Partikel erzeugen.
         if (isEmitting) {
             emissionCounter++
             if (emissionCounter > 5) {
                 emissionCounter = 0
-                repeat(3) {
-                    val randomX = Random.nextFloat() * 80 - 40
-                    val randomY = -(150f + Random.nextFloat() * 100f)
-                    particlePool.spawn(
-                        position = playerPosition,
-                        velocity = Offset(randomX, randomY)
+                repeat(particleSystem.emissionRate) {
+                    particleSystem.spawnParticle(
+                        position = playerPosition
                     )
                 }
             }
         } else {
-            // Wenn nicht emittiert wird, Zähler zurücksetzen.
             emissionCounter = 0
         }
     }
 
-    // Liste aktiver Partikel anfordern, um diese zeichnen zu können.
-    fun getParticles(): List<ParticleData> = particlePool.getActiveParticles()
+    fun getParticles(): List<ParticleData> = particleSystem.getActiveParticles()
+    fun getParticleSize(): Float = particleSystem.getParticleSize()
 }
 
 class MainActivity : ComponentActivity() {
@@ -206,117 +100,93 @@ fun MyDraggableCircleApp() {
     }
 }
 
-@SuppressLint("MultipleAwaitPointerEventScopes", "ReturnFromAwaitPointerEventScope")
 @Composable
 fun GameScreen(
     backgroundColor: Color = Color.Black,
-    playerColor: Color = Color.Red,
+    playerColor: Color = Color.Red
 ) {
-    // State-Variablen für die Spielerposition, Partikel, Emissionsstatus und Anzahl
-    // von Partikeln. Alle als Compose States, damit Änderungen automatisch zum Neuzeichnen führen.
-    var playerPosition by remember { mutableStateOf(Offset.Zero) }
+    var showSettings by remember { mutableStateOf(false) }
+
+    var particleSettings by remember { mutableStateOf(ParticleSettings()) }
+
+    val availableColors = listOf(
+        Color.Green, Color.Cyan, Color.Magenta,
+        Color.Yellow, Color.Blue, Color.White
+    )
+    var selectedColors by remember { mutableStateOf(availableColors.toList()) }
+
     val particles = remember { mutableStateListOf<ParticleData>() }
-    var isEmitting by remember { mutableStateOf(false) }
     var particleCount by remember { mutableIntStateOf(0) }
 
-    // Erstellt einen gemeinsamen GameState, der die Logik verwaltet.
-    val gameState = remember { GameState() }
+    val gameState = remember { GameState(ParticleSystem(particleColors = selectedColors)) }
 
-    // BoxWithConstraints gibt uns maxWidth und maxHeight in Dp,
-    // damit wir dynamisch Layout-Informationen erhalten.
+    LaunchedEffect(particleSettings, selectedColors) {
+        gameState.updateParameters(particleSettings, selectedColors)
+    }
+
     BoxWithConstraints(
         modifier = Modifier.fillMaxSize()
     ) {
-        // LocalDensity erlaubt uns die Umrechnung von Dp in Pixel.
         val density = LocalDensity.current
         val screenWidthPx = with(density) { maxWidth.toPx() }
         val screenHeightPx = with(density) { maxHeight.toPx() }
 
-        // Zu Beginn soll der rote Kreis horizontal mittig und 30 Pixel über dem unteren Rand stehen.
-        // Wir führen dies in einem LaunchedEffect aus, damit es einmalig bei Start gesetzt wird,
-        // wenn die Bildschirmmaße bekannt sind.
-        LaunchedEffect(maxWidth, maxHeight) {
-            playerPosition = Offset(
-                x = screenWidthPx / 2,          // Horizontal mittig
-                y = screenHeightPx - 30f        // 30 Pixel vom unteren Rand entfernt
+        val initialPlayerPosition = remember(maxWidth, maxHeight) {
+            Offset(
+                x = screenWidthPx / 2,
+                y = screenHeightPx - 30f
             )
         }
 
-        // Game Loop:
-        // withFrameNanos wird pro Frame aufgerufen.
-        // Wir berechnen deltaTime und führen dann Updates auf dem Hintergrund-Thread aus.
-        LaunchedEffect(Unit) {
-            var previousTime = 0L
-            while (true) {
-                val currentTime = withFrameNanos { it }
-                if (previousTime != 0L) {
-                    val deltaTime = (currentTime - previousTime) / 1_000_000_000f
+        var playerPosition by remember { mutableStateOf(initialPlayerPosition) }
+        var isEmitting by remember { mutableStateOf(false) }
 
-                    val result = withContext(Dispatchers.Default) {
-                        // Spielerposition und Emissionsstatus an GameState übergeben
+        LaunchedEffect(Unit) {
+            withContext(Dispatchers.Default) {
+                var previousTime = 0L
+                while (isActive) {
+                    val currentTime = withFrameNanos { it }
+                    if (previousTime != 0L) {
+                        val deltaTime = (currentTime - previousTime) / 1_000_000_000f
+
                         gameState.playerPosition = playerPosition
                         gameState.isEmitting = isEmitting
-                        // Spielzustand updaten
                         gameState.update(deltaTime)
-                        // Ergebnis als Paar zurückgeben: Liste der Partikel und Anzahl
-                        Pair(gameState.getParticles(), gameState.particleCount)
-                    }
 
-                    // Partikel-Liste im UI-Thread aktualisieren, damit sie gezeichnet wird.
-                    particles.clear()
-                    particles.addAll(result.first)
-                    particleCount = result.second
+                        val activeParticles = gameState.getParticles()
+                        val currentParticleCount = gameState.particleCount
+
+                        withContext(Dispatchers.Main) {
+                            particles.clear()
+                            particles.addAll(activeParticles)
+                            particleCount = currentParticleCount
+                        }
+                    }
+                    previousTime = currentTime
                 }
-                previousTime = currentTime
             }
         }
 
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(backgroundColor)
-        ) {
-            // Anzeige der aktiven Partikelanzahl oben im Bild
-            Surface(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(16.dp),
-                color = Color.Transparent
-            ) {
-                Text(
-                    text = "Aktive Partikel: $particleCount",
-                    color = Color.White,
-                    textAlign = TextAlign.Center,
-                    modifier = Modifier.fillMaxWidth()
-                )
-            }
-
-            // Pointer-Input für den Spieler:
-            // - Wenn der Finger auf dem Bildschirm aufsetzt (awaitFirstDown), beginnt das Emittieren.
-            // - Während der Finger bewegt wird, ändern wir die Spielerposition.
-            // - Wenn der Finger losgelassen wird, hört das Emittieren auf.
+        Box(modifier = Modifier.fillMaxSize()) {
             Box(
                 modifier = Modifier
                     .fillMaxSize()
+                    .background(backgroundColor)
                     .pointerInput(Unit) {
                         while (true) {
-                            // Warten auf den ersten Finger-Kontakt mit dem Bildschirm
                             val down = awaitPointerEventScope { awaitFirstDown() }
                             isEmitting = true
 
-                            // Solange der Finger auf dem Bildschirm ist, Bewegung verfolgen
                             awaitPointerEventScope {
                                 val pointerId = down.id
                                 while (true) {
                                     val event = awaitPointerEvent()
                                     val change = event.changes.find { it.id == pointerId }
 
-                                    // Wenn Finger hoch geht, isEmitting = false
                                     if (change == null || change.changedToUp()) {
                                         isEmitting = false
                                         break
                                     } else {
-                                        // Finger bewegt sich, passe Spielerposition an
                                         val delta = change.positionChange()
                                         if (delta != Offset.Zero) {
                                             playerPosition = Offset(
@@ -331,24 +201,220 @@ fun GameScreen(
                         }
                     }
             ) {
-                // Canvas zum Zeichnen der Partikel und des roten Kreises.
                 Canvas(modifier = Modifier.fillMaxSize()) {
-                    // Alle Partikel zeichnen
                     particles.forEach { particle ->
                         drawCircle(
                             color = particle.color.copy(alpha = particle.alpha),
-                            radius = 10f,
+                            radius = gameState.getParticleSize(),
                             center = particle.position
                         )
                     }
 
-                    // Roten Kreis zeichnen (Spieler)
                     drawCircle(
                         color = playerColor,
                         radius = 50f,
                         center = playerPosition
                     )
                 }
+            }
+
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(16.dp)
+            ) {
+                IconButton(
+                    onClick = { showSettings = true },
+                    modifier = Modifier
+                        .size(48.dp)
+                        .background(
+                            MaterialTheme.colorScheme.primary.copy(alpha = 0.7f),
+                            CircleShape
+                        )
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Settings,
+                        contentDescription = "Einstellungen",
+                        tint = Color.White
+                    )
+                }
+            }
+
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .padding(16.dp)
+            ) {
+                Text(
+                    text = "Partikel: $particleCount",
+                    color = Color.White,
+                    modifier = Modifier
+                        .background(
+                            color = Color.Black.copy(alpha = 0.5f),
+                            shape = RoundedCornerShape(4.dp)
+                        )
+                        .padding(8.dp)
+                )
+            }
+
+            if (showSettings) {
+                var tempSelectedColors by remember { mutableStateOf(selectedColors.toList()) }
+
+                AlertDialog(
+                    onDismissRequest = { showSettings = false },
+                    title = {
+                        Text(
+                            "Partikel-Einstellungen",
+                            style = MaterialTheme.typography.headlineSmall
+                        )
+                    },
+                    text = {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(16.dp)
+                        ) {
+                            Text(
+                                text = "Basis-Geschwindigkeit: ${particleSettings.baseSpeed.toInt()}",
+                                style = MaterialTheme.typography.bodyLarge
+                            )
+                            Slider(
+                                value = particleSettings.baseSpeed,
+                                onValueChange = {
+                                    particleSettings = particleSettings.copy(baseSpeed = it)
+                                },
+                                valueRange = 50f..300f,
+                                modifier = Modifier.padding(vertical = 8.dp)
+                            )
+
+                            Spacer(modifier = Modifier.height(16.dp))
+
+                            Text(
+                                text = "Verblassungsfaktor: ${"%.2f".format(particleSettings.fadeFactor)}",
+                                style = MaterialTheme.typography.bodyLarge
+                            )
+                            Slider(
+                                value = particleSettings.fadeFactor,
+                                onValueChange = {
+                                    particleSettings = particleSettings.copy(fadeFactor = it)
+                                },
+                                valueRange = 0.5f..3.0f,
+                                modifier = Modifier.padding(vertical = 8.dp)
+                            )
+
+                            Spacer(modifier = Modifier.height(16.dp))
+
+                            Text(
+                                text = "Partikelgröße: ${particleSettings.particleSize.toInt()}",
+                                style = MaterialTheme.typography.bodyLarge
+                            )
+                            Slider(
+                                value = particleSettings.particleSize,
+                                onValueChange = {
+                                    particleSettings = particleSettings.copy(particleSize = it)
+                                },
+                                valueRange = 5f..30f,
+                                modifier = Modifier.padding(vertical = 8.dp)
+                            )
+
+                            Spacer(modifier = Modifier.height(16.dp))
+
+                            Text(
+                                text = "Emissionsrate: ${particleSettings.emissionRate}",
+                                style = MaterialTheme.typography.bodyLarge
+                            )
+                            Slider(
+                                value = particleSettings.emissionRate.toFloat(),
+                                onValueChange = {
+                                    particleSettings = particleSettings.copy(emissionRate = it.toInt())
+                                },
+                                valueRange = 1f..10f,
+                                steps = 8,
+                                modifier = Modifier.padding(vertical = 8.dp)
+                            )
+
+                            Spacer(modifier = Modifier.height(16.dp))
+
+                            Text(
+                                text = "Winkelabweichung: ${particleSettings.angleDeviation.toInt()}°",
+                                style = MaterialTheme.typography.bodyLarge
+                            )
+                            Slider(
+                                value = particleSettings.angleDeviation,
+                                onValueChange = {
+                                    particleSettings = particleSettings.copy(angleDeviation = it)
+                                },
+                                valueRange = 0f..45f,
+                                modifier = Modifier.padding(vertical = 8.dp)
+                            )
+
+                            Spacer(modifier = Modifier.height(16.dp))
+
+                            Text(
+                                text = "Partikelfarben",
+                                style = MaterialTheme.typography.bodyLarge
+                            )
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .horizontalScroll(rememberScrollState())
+                            ) {
+                                availableColors.forEach { color ->
+                                    val isSelected = tempSelectedColors.contains(color)
+                                    Column(
+                                        horizontalAlignment = Alignment.CenterHorizontally,
+                                        modifier = Modifier
+                                            .padding(end = 8.dp)
+                                            .clickable {
+                                                tempSelectedColors = if (isSelected) {
+                                                    tempSelectedColors - color
+                                                } else {
+                                                    tempSelectedColors + color
+                                                }
+                                            }
+                                    ) {
+                                        Box(
+                                            modifier = Modifier
+                                                .size(40.dp)
+                                                .background(color, CircleShape)
+                                                .border(
+                                                    width = if (isSelected) 3.dp else 1.dp,
+                                                    color = if (isSelected) Color.White else Color.Gray,
+                                                    shape = CircleShape
+                                                )
+                                        )
+                                        Checkbox(
+                                            checked = isSelected,
+                                            onCheckedChange = {
+                                                tempSelectedColors = if (isSelected) {
+                                                    tempSelectedColors - color
+                                                } else {
+                                                    tempSelectedColors + color
+                                                }
+                                            }
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    confirmButton = {
+                        TextButton(onClick = {
+                            selectedColors = tempSelectedColors
+                            showSettings = false
+                        }) {
+                            Text("Anwenden")
+                        }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = {
+                            showSettings = false
+                        }) {
+                            Text("Abbrechen")
+                        }
+                    }
+                )
             }
         }
     }
@@ -359,9 +425,3 @@ fun GameScreen(
 fun PreviewGameScreen() {
     MyDraggableCircleApp()
 }
-
-
-
-
-
-
