@@ -8,6 +8,11 @@ import kotlin.math.cos
 import kotlin.math.sin
 import kotlin.random.Random
 
+enum class ParticleGroup {
+    PLAYER,
+    HORIZONTAL,
+    // Hier können später weitere Gruppen hinzugefügt werden
+}
 @Stable
 data class ParticleData(
     var position: Offset,
@@ -15,27 +20,38 @@ data class ParticleData(
     var startY: Float,
     var alpha: Float = 1f,
     var color: Color,
-    var fadeFactor: Float
+    var fadeFactor: Float,
+    var group: ParticleGroup,
+    var size: Float  // Neue Property
 )
 
 class ParticlePool(
     private val maxSize: Int = 1000,
     private var fadeFactor: Float = 1.0f,
-    var particleColors: List<Color>
+    var particleColors: List<Color>,
+    private val particleGroup: ParticleGroup  // Neue Property
 ) {
+    private var screenWidth: Float = 1000f  // Neue Variable
     private val activeParticles = ArrayList<ParticleData>(1000)
     private val inactiveParticles = ArrayList<ParticleData>(1000)
+    val particleCount: Int get() = activeParticles.size
+    private var currentParticleSize: Float = 10f  // Neue Property
+
+    fun updateParticleSize(newSize: Float) {
+        currentParticleSize = newSize
+    }
 
     fun updateParameters(fadeFactor: Float? = null, newParticleColors: List<Color>? = null) {
         fadeFactor?.let { this.fadeFactor = it }
         newParticleColors?.let { this.particleColors = it }
     }
 
-    val particleCount: Int
-        get() = activeParticles.size
+    fun setScreenDimensions(width: Float) {
+        screenWidth = width
+    }
 
-    fun spawn(position: Offset, velocity: Offset): ParticleData {
-        val chosenColor = particleColors.random()
+    fun spawn(position: Offset, velocity: Offset = Offset.Zero): ParticleData {
+        val chosenColor = if (particleColors.isNotEmpty()) particleColors.random() else Color.White
         val adjustedFadeFactor = fadeFactor + Random.nextFloat() * 0.5f
 
         val particle: ParticleData = when {
@@ -47,6 +63,8 @@ class ParticlePool(
                     this.alpha = 1f
                     this.color = chosenColor
                     this.fadeFactor = adjustedFadeFactor
+                    this.group = particleGroup
+                    this.size = currentParticleSize  // Size setzen
                 }
             }
             activeParticles.size < maxSize -> {
@@ -56,7 +74,9 @@ class ParticlePool(
                     startY = position.y,
                     alpha = 1f,
                     color = chosenColor,
-                    fadeFactor = adjustedFadeFactor
+                    fadeFactor = adjustedFadeFactor,
+                    group = particleGroup,
+                    size = currentParticleSize  // Size setzen
                 )
             }
             else -> {
@@ -67,6 +87,8 @@ class ParticlePool(
                     this.alpha = 1f
                     this.color = chosenColor
                     this.fadeFactor = adjustedFadeFactor
+                    this.group = particleGroup
+                    this.size = currentParticleSize  // Size setzen
                 }
             }
         }
@@ -84,7 +106,8 @@ class ParticlePool(
             val rawAlpha = 1f - (traveled / particle.startY) * particle.fadeFactor
             particle.alpha = rawAlpha.coerceIn(0f, 1f)
 
-            if (particle.position.y < -20f) {
+            // Hier die neue Bedingung
+            if (particle.position.y < -20f || particle.position.x < -20f || particle.position.x > screenWidth) {
                 iterator.remove()
                 inactiveParticles.add(particle)
                 continue
@@ -97,26 +120,41 @@ class ParticlePool(
         }
     }
 
+    fun deactivateParticle(particle: ParticleData) {
+        val iterator = activeParticles.iterator()
+        while (iterator.hasNext()) {
+            if (iterator.next() === particle) {  // Referenzvergleich mit ===
+                iterator.remove()
+                inactiveParticles.add(particle)
+                break
+            }
+        }
+    }
+
     fun getActiveParticles(): List<ParticleData> = activeParticles
 }
 
 class ParticleSystem(
     maxPoolSize: Int = 1000,
-    private var baseSpeed: Float = 150f,
+    var baseSpeed: Float = 150f,
     private var fadeFactor: Float = 1.0f,
-    private var particleSize: Float = 10f,
-    internal var emissionRate: Int = 3,
-    private var angleDeviation: Float = 15f,
+    var particleSize: Float = 10f,
+    var emissionRate: Int = 3,
+    var angleDeviation: Float = 15f,
     var particleColors: List<Color> = listOf(
         Color.Green, Color.Cyan, Color.Magenta,
         Color.Yellow, Color.Blue, Color.White
-    )
-) {
+    ),
+    particleGroup: ParticleGroup = ParticleGroup.PLAYER  // Neue Property
+)  {
     private val particlePool = ParticlePool(
         maxSize = maxPoolSize,
         fadeFactor = fadeFactor,
-        particleColors = particleColors
-    )
+        particleColors = particleColors,
+        particleGroup = particleGroup
+    ).apply {
+        updateParticleSize(particleSize)
+    }
 
     fun updateParameters(
         newBaseSpeed: Float? = null,
@@ -128,7 +166,7 @@ class ParticleSystem(
     ) {
         newBaseSpeed?.let { baseSpeed = it }
         newFadeFactor?.let { fadeFactor = it }
-        newParticleSize?.let { particleSize = it }
+        newParticleSize?.let { particlePool.updateParticleSize(it) }
         newEmissionRate?.let { emissionRate = it }
         newAngleDeviation?.let { angleDeviation = it }
 
@@ -142,28 +180,37 @@ class ParticleSystem(
         )
     }
 
-    fun getParticleSize() = particleSize
-    fun getEmissionRate() = emissionRate
+    fun setScreenDimensions(width: Float) {
+        particlePool.setScreenDimensions(width)
+    }
+
     fun getActiveParticles(): List<ParticleData> = particlePool.getActiveParticles()
+
     fun getParticleCount(): Int = particlePool.particleCount
 
-    fun spawnParticle(position: Offset): ParticleData {
-        val variationFactor = 0.5f + Random.nextFloat()
-        val adjustedBaseSpeed = baseSpeed * variationFactor
+    fun spawnParticle(position: Offset, velocity: Offset? = null): ParticleData {
+        val finalVelocity = velocity ?: run {
+            val variationFactor = 0.5f + Random.nextFloat()
+            val adjustedBaseSpeed = baseSpeed * variationFactor
 
-        val deviation = Random.nextFloat() * angleDeviation * if (Random.nextBoolean()) 1 else -1
-        val angleRad = deviation.toRadians()
+            val deviation =
+                Random.nextFloat() * angleDeviation * if (Random.nextBoolean()) 1 else -1
+            val angleRad = deviation.toRadians()
 
-        val adjustedVelocity = Offset(
-            x = adjustedBaseSpeed * sin(angleRad),
-            y = -adjustedBaseSpeed * cos(angleRad)
-        )
+            Offset(
+                x = adjustedBaseSpeed * sin(angleRad),
+                y = -adjustedBaseSpeed * cos(angleRad)
+            )
+        }
 
-        return particlePool.spawn(position, adjustedVelocity)
+        return particlePool.spawn(position, finalVelocity)
     }
 
     fun updateParticles(deltaTime: Float) {
         particlePool.update(deltaTime)
+    }
+    fun deactivateParticle(particle: ParticleData) {
+        particlePool.deactivateParticle(particle)
     }
 }
 

@@ -9,15 +9,42 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitFirstDown
-import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Slider
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.Stable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -26,11 +53,11 @@ import androidx.compose.ui.input.pointer.changedToUp
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
+import kotlin.random.Random
 
 @Stable
 data class ParticleSettings(
@@ -41,34 +68,62 @@ data class ParticleSettings(
     val angleDeviation: Float = 15f
 )
 
-class GameState(private val particleSystem: ParticleSystem = ParticleSystem()) {
+class GameState(
+    private val playerParticleSystem: ParticleSystem = ParticleSystem(
+        particleGroup = ParticleGroup.PLAYER
+    ),
+    private val topParticleSystem: ParticleSystem = ParticleSystem(
+        particleColors = listOf(Color.Red),
+        emissionRate = 2,
+        particleSize = 5f,
+        angleDeviation = 0f,
+        baseSpeed = 100f,
+        particleGroup = ParticleGroup.HORIZONTAL
+    )
+) {
     var playerPosition by mutableStateOf(Offset(200f, 200f))
     var isEmitting by mutableStateOf(false)
     private var emissionCounter = 0
+    private var topEmissionCounter = 0
 
     val particleCount: Int
-        get() = particleSystem.getParticleCount()
+        get() = playerParticleSystem.getParticleCount() + topParticleSystem.getParticleCount()
 
-    fun updateParameters(settings: ParticleSettings, newParticleColors: List<Color>?) {
-        particleSystem.updateParameters(
+    private fun setScreenDimensions(width: Float) {
+        playerParticleSystem.setScreenDimensions(width)
+        topParticleSystem.setScreenDimensions(width)
+    }
+
+    fun updateParameters(settings: ParticleSettings, newPlayerParticleColors: List<Color>?, topSettings: ParticleSettings, newTopParticleColors: List<Color>?) {
+        playerParticleSystem.updateParameters(
             newBaseSpeed = settings.baseSpeed,
             newFadeFactor = settings.fadeFactor,
             newParticleSize = settings.particleSize,
             newEmissionRate = settings.emissionRate,
             newAngleDeviation = settings.angleDeviation,
-            newParticleColors = newParticleColors
+            newParticleColors = newPlayerParticleColors
+        )
+        topParticleSystem.updateParameters(
+            newBaseSpeed = topSettings.baseSpeed,
+            newFadeFactor = topSettings.fadeFactor,
+            newParticleSize = topSettings.particleSize,
+            newEmissionRate = topSettings.emissionRate,
+            newAngleDeviation = topSettings.angleDeviation,
+            newParticleColors = newTopParticleColors
         )
     }
 
-    fun update(deltaTime: Float) {
-        particleSystem.updateParticles(deltaTime)
+    fun update(deltaTime: Float, screenWidth: Float, screenHeight:Float) {
+        setScreenDimensions(screenWidth)
+        // Update Spieler-Partikelsystem
+        playerParticleSystem.updateParticles(deltaTime)
 
         if (isEmitting) {
             emissionCounter++
             if (emissionCounter > 5) {
                 emissionCounter = 0
-                repeat(particleSystem.emissionRate) {
-                    particleSystem.spawnParticle(
+                repeat(playerParticleSystem.emissionRate) {
+                    playerParticleSystem.spawnParticle(
                         position = playerPosition
                     )
                 }
@@ -76,11 +131,69 @@ class GameState(private val particleSystem: ParticleSystem = ParticleSystem()) {
         } else {
             emissionCounter = 0
         }
+
+        topParticleSystem.updateParticles(deltaTime)
+
+        topEmissionCounter++
+        if (topEmissionCounter > 60) {
+            topEmissionCounter = 0
+            val goRight = Random.nextBoolean()
+            val direction = if (goRight) 1f else -1f
+            val xPos = if (goRight) 0f else screenWidth
+            val yPos = (screenHeight / 2f) + Random.nextFloat() * 400f - 200f
+            val velocity = Offset(direction * topParticleSystem.baseSpeed, 0f)
+
+            topParticleSystem.spawnParticle(position = Offset(xPos, yPos), velocity = velocity)
+        }
+
+        // Kollisionen prüfen nach dem Update der Partikelpositionen
+        checkCollisions()
     }
 
-    fun getParticles(): List<ParticleData> = particleSystem.getActiveParticles()
-    fun getParticleSize(): Float = particleSystem.getParticleSize()
+    private fun checkParticleCollision(p1: ParticleData, p2: ParticleData): Boolean {
+        // Schneller Vorabcheck mit AABB (Axis-Aligned Bounding Box)
+        val combinedSize = p1.size + p2.size
+        if (kotlin.math.abs(p1.position.x - p2.position.x) > combinedSize ||
+            kotlin.math.abs(p1.position.y - p2.position.y) > combinedSize) {
+            return false
+        }
+
+        // Quadrierte Distanz berechnen (vermeidet teure Quadratwurzel)
+        val dx = p1.position.x - p2.position.x
+        val dy = p1.position.y - p2.position.y
+        val distanceSquared = dx * dx + dy * dy
+
+        // Quadrierter Schwellwert für Vergleich
+        val thresholdSquared = combinedSize * combinedSize
+
+        return distanceSquared < thresholdSquared
+    }
+
+    private fun checkCollisions() {
+        val horizontalParticles = getParticles().filter { it.group == ParticleGroup.HORIZONTAL }
+        val playerParticles = getParticles().filter { it.group == ParticleGroup.PLAYER }
+
+        for (horizontal in horizontalParticles) {
+            for (player in playerParticles) {
+                if (checkParticleCollision(horizontal, player)) {
+                    // Hier können wir auf die Kollision reagieren
+                    // Zum Beispiel:
+                    handleCollision(horizontal, player)
+                }
+            }
+        }
+    }
+
+    private fun handleCollision(horizontal: ParticleData, player: ParticleData) {
+        topParticleSystem.deactivateParticle(horizontal)
+        playerParticleSystem.deactivateParticle(player)
+        //collisionCount++
+    }
+
+    fun getParticles(): List<ParticleData> = playerParticleSystem.getActiveParticles() + topParticleSystem.getActiveParticles()
+
 }
+
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -105,23 +218,37 @@ fun GameScreen(
     backgroundColor: Color = Color.Black,
     playerColor: Color = Color.Red
 ) {
-    var showSettings by remember { mutableStateOf(false) }
+    var showPlayerSettings by remember { mutableStateOf(false) }
+    var showTopSettings by remember { mutableStateOf(false) }
 
-    var particleSettings by remember { mutableStateOf(ParticleSettings()) }
+    var playerSettings by remember { mutableStateOf(ParticleSettings()) }
+    var topSettings by remember { mutableStateOf(ParticleSettings(
+        baseSpeed = 100f,
+        fadeFactor = 1.0f,
+        particleSize = 5f,
+        emissionRate = 2,
+        angleDeviation = 0f
+    )) }
 
     val availableColors = listOf(
         Color.Green, Color.Cyan, Color.Magenta,
-        Color.Yellow, Color.Blue, Color.White
+        Color.Yellow, Color.Blue, Color.White, Color.Red
     )
-    var selectedColors by remember { mutableStateOf(availableColors.toList()) }
+    var selectedPlayerColors by remember { mutableStateOf(listOf(Color.Green, Color.Cyan, Color.Magenta, Color.Yellow, Color.Blue, Color.White)) }
+    var selectedTopColors by remember { mutableStateOf(listOf(Color.Red)) }
 
     val particles = remember { mutableStateListOf<ParticleData>() }
     var particleCount by remember { mutableIntStateOf(0) }
 
-    val gameState = remember { GameState(ParticleSystem(particleColors = selectedColors)) }
+    val gameState = remember { GameState() }
 
-    LaunchedEffect(particleSettings, selectedColors) {
-        gameState.updateParameters(particleSettings, selectedColors)
+    LaunchedEffect(playerSettings, selectedPlayerColors, topSettings, selectedTopColors) {
+        gameState.updateParameters(
+            settings = playerSettings,
+            newPlayerParticleColors = selectedPlayerColors,
+            topSettings = topSettings,
+            newTopParticleColors = selectedTopColors
+        )
     }
 
     BoxWithConstraints(
@@ -151,7 +278,7 @@ fun GameScreen(
 
                         gameState.playerPosition = playerPosition
                         gameState.isEmitting = isEmitting
-                        gameState.update(deltaTime)
+                        gameState.update(deltaTime, screenWidthPx, screenHeightPx)
 
                         val activeParticles = gameState.getParticles()
                         val currentParticleCount = gameState.particleCount
@@ -205,7 +332,7 @@ fun GameScreen(
                     particles.forEach { particle ->
                         drawCircle(
                             color = particle.color.copy(alpha = particle.alpha),
-                            radius = gameState.getParticleSize(),
+                            radius = particle.size,
                             center = particle.position
                         )
                     }
@@ -218,13 +345,14 @@ fun GameScreen(
                 }
             }
 
+            // Button für Spieler-Partikel Einstellungen
             Box(
                 modifier = Modifier
                     .align(Alignment.TopEnd)
                     .padding(16.dp)
             ) {
                 IconButton(
-                    onClick = { showSettings = true },
+                    onClick = { showTopSettings = true },
                     modifier = Modifier
                         .size(48.dp)
                         .background(
@@ -234,37 +362,84 @@ fun GameScreen(
                 ) {
                     Icon(
                         imageVector = Icons.Default.Settings,
-                        contentDescription = "Einstellungen",
+                        contentDescription = "Spieler Einstellungen",
                         tint = Color.White
                     )
                 }
             }
 
+            // Button für Top-Partikel Einstellungen
+            Box(
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(16.dp)
+            ) {
+                IconButton(
+                    onClick = { showPlayerSettings = true },
+                    modifier = Modifier
+                        .size(48.dp)
+                        .background(
+                            MaterialTheme.colorScheme.primary.copy(alpha = 0.7f),
+                            CircleShape
+                        )
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Settings,
+                        contentDescription = "Obere Partikel Einstellungen",
+                        tint = Color.White
+                    )
+                }
+            }
+
+// Partikelanzahl und FPS anzeigen
             Box(
                 modifier = Modifier
                     .align(Alignment.TopStart)
                     .padding(16.dp)
             ) {
-                Text(
-                    text = "Partikel: $particleCount",
-                    color = Color.White,
-                    modifier = Modifier
-                        .background(
-                            color = Color.Black.copy(alpha = 0.5f),
-                            shape = RoundedCornerShape(4.dp)
-                        )
-                        .padding(8.dp)
-                )
+                var fps by remember { mutableIntStateOf(0) }
+                var frameCount by remember { mutableIntStateOf(0) }
+                var lastFpsUpdate by remember { androidx.compose.runtime.mutableLongStateOf(0L) }
+
+                LaunchedEffect(Unit) {
+                    while (true) {
+                        withFrameNanos { frameTime ->
+                            frameCount++
+                            val elapsed = frameTime - lastFpsUpdate
+
+                            if (elapsed >= 1_000_000_000) { // Update FPS every second
+                                fps = frameCount
+                                frameCount = 0
+                                lastFpsUpdate = frameTime
+                            }
+                        }
+                    }
+                }
+
+                Column {
+                    Text(
+                        text = "Partikel: $particleCount | FPS: $fps",
+                        color = Color.White,
+                        modifier = Modifier
+                            .background(
+                                color = Color.Black.copy(alpha = 0.5f),
+                                shape = RoundedCornerShape(4.dp)
+                            )
+                            .padding(8.dp)
+                    )
+                }
             }
 
-            if (showSettings) {
-                var tempSelectedColors by remember { mutableStateOf(selectedColors.toList()) }
+// Spieler Partikel Einstellungen Dialog
+            if (showPlayerSettings) {
+                var tempSelectedColors by remember { mutableStateOf(selectedPlayerColors.toList()) }
+                var tempPlayerSettings by remember { mutableStateOf(playerSettings) }
 
                 AlertDialog(
-                    onDismissRequest = { showSettings = false },
+                    onDismissRequest = { showPlayerSettings = false },
                     title = {
                         Text(
-                            "Partikel-Einstellungen",
+                            "Spieler Partikel-Einstellungen",
                             style = MaterialTheme.typography.headlineSmall
                         )
                     },
@@ -272,16 +447,19 @@ fun GameScreen(
                         Column(
                             modifier = Modifier
                                 .fillMaxWidth()
+                                .verticalScroll(rememberScrollState())
                                 .padding(16.dp)
+                                //.height(IntrinsicSize.Min)
+                                //.heightIn(max = 400.dp)
                         ) {
                             Text(
-                                text = "Basis-Geschwindigkeit: ${particleSettings.baseSpeed.toInt()}",
+                                text = "Basis-Geschwindigkeit: ${tempPlayerSettings.baseSpeed.toInt()}",
                                 style = MaterialTheme.typography.bodyLarge
                             )
                             Slider(
-                                value = particleSettings.baseSpeed,
+                                value = tempPlayerSettings.baseSpeed,
                                 onValueChange = {
-                                    particleSettings = particleSettings.copy(baseSpeed = it)
+                                    tempPlayerSettings = tempPlayerSettings.copy(baseSpeed = it)
                                 },
                                 valueRange = 50f..300f,
                                 modifier = Modifier.padding(vertical = 8.dp)
@@ -290,13 +468,13 @@ fun GameScreen(
                             Spacer(modifier = Modifier.height(16.dp))
 
                             Text(
-                                text = "Verblassungsfaktor: ${"%.2f".format(particleSettings.fadeFactor)}",
+                                text = "Verblassungsfaktor: ${"%.2f".format(tempPlayerSettings.fadeFactor)}",
                                 style = MaterialTheme.typography.bodyLarge
                             )
                             Slider(
-                                value = particleSettings.fadeFactor,
+                                value = tempPlayerSettings.fadeFactor,
                                 onValueChange = {
-                                    particleSettings = particleSettings.copy(fadeFactor = it)
+                                    tempPlayerSettings = tempPlayerSettings.copy(fadeFactor = it)
                                 },
                                 valueRange = 0.5f..3.0f,
                                 modifier = Modifier.padding(vertical = 8.dp)
@@ -305,13 +483,13 @@ fun GameScreen(
                             Spacer(modifier = Modifier.height(16.dp))
 
                             Text(
-                                text = "Partikelgröße: ${particleSettings.particleSize.toInt()}",
+                                text = "Partikelgröße: ${tempPlayerSettings.particleSize.toInt()}",
                                 style = MaterialTheme.typography.bodyLarge
                             )
                             Slider(
-                                value = particleSettings.particleSize,
+                                value = tempPlayerSettings.particleSize,
                                 onValueChange = {
-                                    particleSettings = particleSettings.copy(particleSize = it)
+                                    tempPlayerSettings = tempPlayerSettings.copy(particleSize = it)
                                 },
                                 valueRange = 5f..30f,
                                 modifier = Modifier.padding(vertical = 8.dp)
@@ -320,13 +498,13 @@ fun GameScreen(
                             Spacer(modifier = Modifier.height(16.dp))
 
                             Text(
-                                text = "Emissionsrate: ${particleSettings.emissionRate}",
+                                text = "Emissionsrate: ${tempPlayerSettings.emissionRate}",
                                 style = MaterialTheme.typography.bodyLarge
                             )
                             Slider(
-                                value = particleSettings.emissionRate.toFloat(),
+                                value = tempPlayerSettings.emissionRate.toFloat(),
                                 onValueChange = {
-                                    particleSettings = particleSettings.copy(emissionRate = it.toInt())
+                                    tempPlayerSettings = tempPlayerSettings.copy(emissionRate = it.toInt())
                                 },
                                 valueRange = 1f..10f,
                                 steps = 8,
@@ -336,13 +514,13 @@ fun GameScreen(
                             Spacer(modifier = Modifier.height(16.dp))
 
                             Text(
-                                text = "Winkelabweichung: ${particleSettings.angleDeviation.toInt()}°",
+                                text = "Winkelabweichung: ${tempPlayerSettings.angleDeviation.toInt()}°",
                                 style = MaterialTheme.typography.bodyLarge
                             )
                             Slider(
-                                value = particleSettings.angleDeviation,
+                                value = tempPlayerSettings.angleDeviation,
                                 onValueChange = {
-                                    particleSettings = particleSettings.copy(angleDeviation = it)
+                                    tempPlayerSettings = tempPlayerSettings.copy(angleDeviation = it)
                                 },
                                 valueRange = 0f..45f,
                                 modifier = Modifier.padding(vertical = 8.dp)
@@ -360,7 +538,7 @@ fun GameScreen(
                                     .fillMaxWidth()
                                     .horizontalScroll(rememberScrollState())
                             ) {
-                                availableColors.forEach { color ->
+                                availableColors.filter { it != Color.Red }.forEach { color ->
                                     val isSelected = tempSelectedColors.contains(color)
                                     Column(
                                         horizontalAlignment = Alignment.CenterHorizontally,
@@ -401,15 +579,181 @@ fun GameScreen(
                     },
                     confirmButton = {
                         TextButton(onClick = {
-                            selectedColors = tempSelectedColors
-                            showSettings = false
+                            selectedPlayerColors = tempSelectedColors
+                            playerSettings = tempPlayerSettings
+                            showPlayerSettings = false
                         }) {
                             Text("Anwenden")
                         }
                     },
                     dismissButton = {
                         TextButton(onClick = {
-                            showSettings = false
+                            showPlayerSettings = false
+                        }) {
+                            Text("Abbrechen")
+                        }
+                    }
+                )
+            }
+// Top Partikel Einstellungen Dialog
+            if (showTopSettings) {
+                var tempSelectedColors by remember { mutableStateOf(selectedTopColors.toList()) }
+                var tempTopSettings by remember { mutableStateOf(topSettings) }
+
+                AlertDialog(
+                    onDismissRequest = { showTopSettings = false },
+                    title = {
+                        Text(
+                            "Obere Partikel-Einstellungen",
+                            style = MaterialTheme.typography.headlineSmall
+                        )
+                    },
+                    text = {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .verticalScroll(rememberScrollState())
+                                .padding(16.dp)
+                                //.height(IntrinsicSize.Min)
+                                //.heightIn(max = 400.dp)
+                        ) {
+                            Text(
+                                text = "Basis-Geschwindigkeit: ${tempTopSettings.baseSpeed.toInt()}",
+                                style = MaterialTheme.typography.bodyLarge
+                            )
+                            Slider(
+                                value = tempTopSettings.baseSpeed,
+                                onValueChange = {
+                                    tempTopSettings = tempTopSettings.copy(baseSpeed = it)
+                                },
+                                valueRange = 50f..300f,
+                                modifier = Modifier.padding(vertical = 8.dp)
+                            )
+
+                            Spacer(modifier = Modifier.height(16.dp))
+
+                            Text(
+                                text = "Verblassungsfaktor: ${"%.2f".format(tempTopSettings.fadeFactor)}",
+                                style = MaterialTheme.typography.bodyLarge
+                            )
+                            Slider(
+                                value = tempTopSettings.fadeFactor,
+                                onValueChange = {
+                                    tempTopSettings = tempTopSettings.copy(fadeFactor = it)
+                                },
+                                valueRange = 0.5f..3.0f,
+                                modifier = Modifier.padding(vertical = 8.dp)
+                            )
+
+                            Spacer(modifier = Modifier.height(16.dp))
+
+                            Text(
+                                text = "Partikelgröße: ${tempTopSettings.particleSize.toInt()}",
+                                style = MaterialTheme.typography.bodyLarge
+                            )
+                            Slider(
+                                value = tempTopSettings.particleSize,
+                                onValueChange = {
+                                    tempTopSettings = tempTopSettings.copy(particleSize = it)
+                                },
+                                valueRange = 5f..30f,
+                                modifier = Modifier.padding(vertical = 8.dp)
+                            )
+
+                            Spacer(modifier = Modifier.height(16.dp))
+
+                            Text(
+                                text = "Emissionsrate: ${tempTopSettings.emissionRate}",
+                                style = MaterialTheme.typography.bodyLarge
+                            )
+                            Slider(
+                                value = tempTopSettings.emissionRate.toFloat(),
+                                onValueChange = {
+                                    tempTopSettings = tempTopSettings.copy(emissionRate = it.toInt())
+                                },
+                                valueRange = 1f..10f,
+                                steps = 8,
+                                modifier = Modifier.padding(vertical = 8.dp)
+                            )
+
+                            Spacer(modifier = Modifier.height(16.dp))
+
+                            Text(
+                                text = "Winkelabweichung: ${tempTopSettings.angleDeviation.toInt()}°",
+                                style = MaterialTheme.typography.bodyLarge
+                            )
+                            Slider(
+                                value = tempTopSettings.angleDeviation,
+                                onValueChange = {
+                                    tempTopSettings = tempTopSettings.copy(angleDeviation = it)
+                                },
+                                valueRange = 0f..45f,
+                                modifier = Modifier.padding(vertical = 8.dp)
+                            )
+
+                            Spacer(modifier = Modifier.height(16.dp))
+
+                            Text(
+                                text = "Partikelfarben",
+                                style = MaterialTheme.typography.bodyLarge
+                            )
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .horizontalScroll(rememberScrollState())
+                            ) {
+                                availableColors.filter { it == Color.Red }.forEach { color ->
+                                    val isSelected = tempSelectedColors.contains(color)
+                                    Column(
+                                        horizontalAlignment = Alignment.CenterHorizontally,
+                                        modifier = Modifier
+                                            .padding(end = 8.dp)
+                                            .clickable {
+                                                tempSelectedColors = if (isSelected) {
+                                                    tempSelectedColors - color
+                                                } else {
+                                                    tempSelectedColors + color
+                                                }
+                                            }
+                                    ) {
+                                        Box(
+                                            modifier = Modifier
+                                                .size(40.dp)
+                                                .background(color, CircleShape)
+                                                .border(
+                                                    width = if (isSelected) 3.dp else 1.dp,
+                                                    color = if (isSelected) Color.White else Color.Gray,
+                                                    shape = CircleShape
+                                                )
+                                        )
+                                        Checkbox(
+                                            checked = isSelected,
+                                            onCheckedChange = {
+                                                tempSelectedColors = if (isSelected) {
+                                                    tempSelectedColors - color
+                                                } else {
+                                                    tempSelectedColors + color
+                                                }
+                                            }
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    confirmButton = {
+                        TextButton(onClick = {
+                            selectedTopColors = tempSelectedColors
+                            topSettings = tempTopSettings
+                            showTopSettings = false
+                        }) {
+                            Text("Anwenden")
+                        }
+                    },
+                    dismissButton = {
+                        TextButton(onClick = {
+                            showTopSettings = false
                         }) {
                             Text("Abbrechen")
                         }
@@ -418,10 +762,4 @@ fun GameScreen(
             }
         }
     }
-}
-
-@Preview(showBackground = true)
-@Composable
-fun PreviewGameScreen() {
-    MyDraggableCircleApp()
 }
